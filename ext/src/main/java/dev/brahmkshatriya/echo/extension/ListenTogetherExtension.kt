@@ -5,6 +5,7 @@ import dev.brahmkshatriya.echo.common.clients.HomeFeedClient
 import dev.brahmkshatriya.echo.common.helpers.ContinuationCallback.Companion.await
 import dev.brahmkshatriya.echo.common.helpers.PagedData
 import dev.brahmkshatriya.echo.common.models.Feed
+import dev.brahmkshatriya.echo.common.models.Feed.Companion.toFeed
 import dev.brahmkshatriya.echo.common.models.Shelf
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
@@ -23,21 +24,24 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
     override suspend fun getSettingItems(): List<Setting> = emptyList()
     override fun setSettings(settings: Settings) { setting = settings }
 
-    override fun loadHomeFeed(): Feed<Shelf> = PagedData.Single {
-        val rooms = getRooms()
-        val categories = rooms.map { (roomId, host) ->
-            Shelf.Category(
-                id = roomId,
-                title = "Room $roomId",
-                subtitle = "Host: $host",
+    override fun loadHomeFeed(): Feed<Shelf> {
+        return PagedData.Single<Shelf> {
+            val rooms = getRooms()
+            val categories = rooms.map { (roomId, host) ->
+                Shelf.Category(
+                    id = roomId,
+                    title = "Room $roomId",
+                    subtitle = "Host: $host"
+                )
+            }
+            listOf(
+                Shelf.Lists.Categories(
+                    id = "rooms",
+                    title = "Active Rooms",
+                    list = categories
+                )
             )
-        }
-        val shelf = Shelf.Lists.Categories(
-            id = "rooms",
-            title = "Active Rooms",
-            list = categories
-        )
-        listOf(shelf)
+        }.toFeed()
     }
 
     private suspend fun getRooms(): List<Pair<String, String>> {
