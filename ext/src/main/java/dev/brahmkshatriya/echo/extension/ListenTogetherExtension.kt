@@ -8,6 +8,9 @@ import dev.brahmkshatriya.echo.common.models.Feed
 import dev.brahmkshatriya.echo.common.models.Feed.Companion.toFeed
 import dev.brahmkshatriya.echo.common.models.Shelf
 import dev.brahmkshatriya.echo.common.settings.Setting
+import dev.brahmkshatriya.echo.common.settings.SettingTextInput
+import dev.brahmkshatriya.echo.common.settings.SettingOnClick
+import dev.brahmkshatriya.echo.common.settings.SettingCategory
 import dev.brahmkshatriya.echo.common.settings.Settings
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,7 +24,51 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
     private val httpClient = OkHttpClient()
     private val firebaseUrl = "https://echo-listen-together-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-    override suspend fun getSettingItems(): List<Setting> = emptyList()
+    override suspend fun getSettingItems(): List<Setting> = listOf(
+        SettingCategory(
+            title = "Profile",
+            key = "profile",
+            items = listOf(
+                SettingTextInput(
+                    key = "username",
+                    title = "Your Name",
+                    summary = "Name shown to others in rooms",
+                    defaultValue = "User"
+                )
+            )
+        ),
+        SettingCategory(
+            title = "Room",
+            key = "room",
+            items = listOf(
+                SettingOnClick(
+                    key = "create_room",
+                    title = "Create Room",
+                    summary = "Create a new listen together room"
+                ) {
+                    val username = setting.getString("username") ?: "User"
+                    createRoom(username)
+                },
+                SettingTextInput(
+                    key = "join_room_id",
+                    title = "Room ID to Join",
+                    summary = "Enter 6-character room ID",
+                    defaultValue = ""
+                ),
+                SettingOnClick(
+                    key = "join_room",
+                    title = "Join Room",
+                    summary = "Join an existing room"
+                ) {
+                    val roomId = setting.getString("join_room_id") ?: ""
+                    if (roomId.isNotBlank()) {
+                        setting.putString("current_room", roomId.uppercase())
+                    }
+                }
+            )
+        )
+    )
+
     override fun setSettings(settings: Settings) { setting = settings }
 
     override suspend fun loadHomeFeed(): Feed<Shelf> {
@@ -69,6 +116,7 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
             .put(body)
             .build()
         httpClient.newCall(request).await()
+        setting.putString("current_room", roomId)
         return roomId
     }
 
