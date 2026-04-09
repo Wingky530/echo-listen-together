@@ -48,7 +48,7 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
                 ) {
                     val username = setting.getString("username") ?: "User"
                     val existingRoom = setting.getString("current_room")
-                    if (existingRoom != null) {
+                    if (existingRoom != null && existingRoom.isNotBlank()) {
                         deleteRoom(existingRoom)
                     }
                     val roomId = createRoom(username)
@@ -71,6 +71,23 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
                     }
                 },
                 SettingOnClick(
+                    key = "update_now_playing",
+                    title = "Update Now Playing",
+                    summary = "Update what you're currently playing (paste track info)"
+                ) {
+                    val roomId = setting.getString("current_room") ?: return@SettingOnClick
+                    val trackInfo = setting.getString("now_playing_input") ?: ""
+                    if (trackInfo.isNotBlank()) {
+                        updateNowPlaying(roomId, trackInfo)
+                    }
+                },
+                SettingTextInput(
+                    key = "now_playing_input",
+                    title = "Now Playing Info",
+                    summary = "Enter track name to share with room",
+                    defaultValue = ""
+                ),
+                SettingOnClick(
                     key = "leave_room",
                     title = "Leave/Delete Room",
                     summary = "Leave current room or delete if you are host"
@@ -91,38 +108,59 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
 
     override suspend fun loadHomeFeed(): Feed<Shelf> {
         return PagedData.Single<Shelf> {
-            val rooms = getRooms()
+            val shelves = mutableListOf<Shelf>()
+
+            // Show current room with now playing info
             val currentRoom = setting.getString("current_room")
-            val header = if (currentRoom != null && currentRoom.isNotBlank()) {
-                listOf(Shelf.Category(
-                    id = "current",
-                    title = "Your Current Room: $currentRoom",
-                    subtitle = "Tap to refresh"
-                ))
-            } else emptyList()
-            val categories = rooms.map { (roomId, host) ->
-                Shelf.Category(
-                    id = roomId,
-                    title = "Room $roomId",
-                    subtitle = "Host: $host"
+            if (!currentRoom.isNullOrBlank()) {
+                val state = getState(currentRoom)
+                val nowPlaying = extractField(state, "nowPlaying") ?: "Nothing playing"
+                val host = extractField(state, "host") ?: "Unknown"
+                shelves.add(
+                    Shelf.Lists.Categories(
+                        id = "current_room",
+                        title = "Your Room: $currentRoom",
+                        list = listOf(
+                            Shelf.Category(
+                                id = "now_playing",
+                                title = "🎵 $nowPlaying",
+                                subtitle = "Host: $host • Search this song to sync!"
+                            )
+                        )
+                    )
                 )
             }
-            listOf(
-                Shelf.Lists.Categories(
-                    id = "current_room",
-                    title = "Your Room",
-                    list = header.filterIsInstance<Shelf.Category>()
-                ),
-                Shelf.Lists.Categories(
-                    id = "rooms",
-                    title = "Active Rooms",
-                    list = categories
+
+            // Show all active rooms
+            val rooms = getRooms()
+            if (rooms.isNotEmpty()) {
+                val categories = rooms.map { (roomId, host, nowPlaying) ->
+                    Shelf.Category(
+                        id = roomId,
+                        title = "Room $roomId",
+                        subtitle = "Host: $host • 🎵 $nowPlaying"
+                    )
+                }
+                shelves.add(
+                    Shelf.Lists.Categories(
+                        id = "rooms",
+                        title = "Active Rooms",
+                        list = categories
+                    )
                 )
-            ).filter { it.list.isNotEmpty() }
+            }
+
+            shelves
         }.toFeed()
     }
 
-    private suspend fun getRooms(): List<Pair<String, String>> {
+    private fun extractField(json: String?, field: String): String? {
+        if (json == null) return null
+        val regex = Regex(""""$field"\s*:\s*"([^"]+)"""")
+        return regex.find(json)?.groupValues?.get(1)
+    }
+
+    private suspend fun getRooms(): List<Triple<String, String, String>> {
         val request = Request.Builder()
             .url("$firebaseUrl/rooms.json")
             .get()
@@ -130,17 +168,21 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
         val response = httpClient.newCall(request).await()
         val body = response.body?.string() ?: return emptyList()
         if (body == "null") return emptyList()
-        val result = mutableListOf<Pair<String, String>>()
-        val regex = Regex(""""([A-Z0-9]{6})"\s*:\s*\{[^}]*"host"\s*:\s*"([^"]+)"""")
-        regex.findAll(body).forEach { match ->
-            result.add(match.groupValues[1] to match.groupValues[2])
+        val result = mutableListOf<Triple<String, String, String>>()
+        val roomRegex = Regex(""""([A-Z0-9]{6})"\s*:\s*\{([^}]+)\}""")
+        roomRegex.findAll(body).forEach { match ->
+            val roomId = match.groupValues[1]
+            val roomData = match.groupValues[2]
+            val host = Regex(""""host"\s*:\s*"([^"]+)"""").find(roomData)?.groupValues?.get(1) ?: "Unknown"
+            val nowPlaying = Regex(""""nowPlaying"\s*:\s*"([^"]+)"""").find(roomData)?.groupValues?.get(1) ?: "Nothing playing"
+            result.add(Triple(roomId, host, nowPlaying))
         }
         return result
     }
 
     private suspend fun createRoom(hostName: String): String {
         val roomId = UUID.randomUUID().toString().take(6).uppercase()
-        val data = """{"host":"$hostName","track":"","position":0,"isPlaying":false,"updatedAt":${System.currentTimeMillis()}}"""
+        val data = """{"host":"$hostName","nowPlaying":"","position":0,"isPlaying":false,"updatedAt":${System.currentTimeMillis()}}"""
         val body = data.toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$firebaseUrl/rooms/$roomId.json")
@@ -158,8 +200,8 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
         httpClient.newCall(request).await()
     }
 
-    suspend fun updateState(roomId: String, trackId: String, position: Long, isPlaying: Boolean) {
-        val data = """{"track":"$trackId","position":$position,"isPlaying":$isPlaying,"updatedAt":${System.currentTimeMillis()}}"""
+    private suspend fun updateNowPlaying(roomId: String, trackInfo: String) {
+        val data = """{"nowPlaying":"$trackInfo","updatedAt":${System.currentTimeMillis()}}"""
         val body = data.toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$firebaseUrl/rooms/$roomId.json")
@@ -168,7 +210,7 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
         httpClient.newCall(request).await()
     }
 
-    suspend fun getState(roomId: String): String? {
+    private suspend fun getState(roomId: String): String? {
         val request = Request.Builder()
             .url("$firebaseUrl/rooms/$roomId.json")
             .get()
