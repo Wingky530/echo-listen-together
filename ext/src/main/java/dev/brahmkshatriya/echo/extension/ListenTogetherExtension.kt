@@ -24,7 +24,7 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
     override suspend fun getSettingItems(): List<Setting> = emptyList()
     override fun setSettings(settings: Settings) { setting = settings }
 
-    override fun loadHomeFeed(): Feed<Shelf> {
+    override suspend fun loadHomeFeed(): Feed<Shelf> {
         return PagedData.Single<Shelf> {
             val rooms = getRooms()
             val categories = rooms.map { (roomId, host) ->
