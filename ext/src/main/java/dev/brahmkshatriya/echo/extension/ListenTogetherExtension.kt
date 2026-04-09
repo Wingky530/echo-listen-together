@@ -47,7 +47,12 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
                     summary = "Create a new listen together room"
                 ) {
                     val username = setting.getString("username") ?: "User"
-                    createRoom(username)
+                    val existingRoom = setting.getString("current_room")
+                    if (existingRoom != null) {
+                        deleteRoom(existingRoom)
+                    }
+                    val roomId = createRoom(username)
+                    setting.putString("current_room", roomId)
                 },
                 SettingTextInput(
                     key = "join_room_id",
@@ -64,6 +69,19 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
                     if (roomId.isNotBlank()) {
                         setting.putString("current_room", roomId.uppercase())
                     }
+                },
+                SettingOnClick(
+                    key = "leave_room",
+                    title = "Leave/Delete Room",
+                    summary = "Leave current room or delete if you are host"
+                ) {
+                    val roomId = setting.getString("current_room") ?: return@SettingOnClick
+                    val username = setting.getString("username") ?: "User"
+                    val state = getState(roomId)
+                    if (state != null && state.contains("\"host\":\"$username\"")) {
+                        deleteRoom(roomId)
+                    }
+                    setting.putString("current_room", "")
                 }
             )
         )
@@ -74,6 +92,14 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
     override suspend fun loadHomeFeed(): Feed<Shelf> {
         return PagedData.Single<Shelf> {
             val rooms = getRooms()
+            val currentRoom = setting.getString("current_room")
+            val header = if (currentRoom != null && currentRoom.isNotBlank()) {
+                listOf(Shelf.Category(
+                    id = "current",
+                    title = "Your Current Room: $currentRoom",
+                    subtitle = "Tap to refresh"
+                ))
+            } else emptyList()
             val categories = rooms.map { (roomId, host) ->
                 Shelf.Category(
                     id = roomId,
@@ -83,11 +109,16 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
             }
             listOf(
                 Shelf.Lists.Categories(
+                    id = "current_room",
+                    title = "Your Room",
+                    list = header.filterIsInstance<Shelf.Category>()
+                ),
+                Shelf.Lists.Categories(
                     id = "rooms",
                     title = "Active Rooms",
                     list = categories
                 )
-            )
+            ).filter { it.list.isNotEmpty() }
         }.toFeed()
     }
 
@@ -107,7 +138,7 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
         return result
     }
 
-    suspend fun createRoom(hostName: String): String {
+    private suspend fun createRoom(hostName: String): String {
         val roomId = UUID.randomUUID().toString().take(6).uppercase()
         val data = """{"host":"$hostName","track":"","position":0,"isPlaying":false,"updatedAt":${System.currentTimeMillis()}}"""
         val body = data.toRequestBody("application/json".toMediaType())
@@ -116,8 +147,15 @@ class ListenTogetherExtension : ExtensionClient, HomeFeedClient {
             .put(body)
             .build()
         httpClient.newCall(request).await()
-        setting.putString("current_room", roomId)
         return roomId
+    }
+
+    private suspend fun deleteRoom(roomId: String) {
+        val request = Request.Builder()
+            .url("$firebaseUrl/rooms/$roomId.json")
+            .delete()
+            .build()
+        httpClient.newCall(request).await()
     }
 
     suspend fun updateState(roomId: String, trackId: String, position: Long, isPlaying: Boolean) {
